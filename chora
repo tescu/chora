@@ -1,0 +1,488 @@
+#!/usr/bin/env lua
+-- chora 
+--   Simple terminal TUI for drawing pixel-art.
+--
+-- Licensed under the GNU GPLv2. See LICENSE file for details.
+-- (c) 2025 tescu (negoitescu) - https://github.com/tescu/chora
+-- TODO:
+-- [ ] Line drawing
+-- [ ] Clever exporting (removing trailing .ch)
+-- [ ] Clean syntax (use a standard function naming)
+
+--
+-- Variabile
+--
+ESC = "\027["
+RES = ESC.."0m"
+-- culori (1..7)
+COLORS = {
+  ESC.."40m "..RES, -- Negru
+  ESC.."41m "..RES, -- Roșu
+  ESC.."42m "..RES, -- Verde
+  ESC.."43m "..RES, -- Galben
+  ESC.."44m "..RES, -- Albastru
+  ESC.."45m "..RES, -- Mov
+  ESC.."46m "..RES, -- Turcoaz
+  ESC.."47m "..RES  -- Alb
+}
+SVG = {
+	"black",
+	"red",
+	"green",
+	"yellow",
+	"blue",
+	"magenta",
+	"cyan",
+	"white"
+}
+XPM = {
+   "n", -- negru
+   "r", -- roșu
+   "v", -- verde
+   "g", -- galben
+   "b", -- bleu (albastru)
+   "m", -- magenta/mov
+   "t", -- turcoaz
+   "a", -- alb
+}
+-- mărimea ecranului este minimum x+2, y+4
+SCENE = {60, 20}
+WINDOW = {}
+-- Bufferul este interpretat mai târziu
+BUFFER = {}
+
+-- Caractere interfață
+BORDER = COLORS[1]
+CURSOR = "@"
+
+-- Coordonate
+-- X, Y și XX, YY (istoric)
+C_XY = {1, 1, 1, 1}
+
+-- Scurtături tastatură
+KEY_LEFT   = 68
+KEY_DOWN   = 66
+KEY_UP     = 65
+KEY_RIGHT  = 67
+KEY_IN     = 105 -- i
+KEY_OUT    = 111 -- o
+KEY_PICK   = 99  -- p
+KEY_SAVE   = 115 -- s
+KEY_EXPORT = 101 -- e
+KEY_QUIT   = 113 -- q
+
+-- Altele
+quit = nil
+info = "Welcome to chora!"
+filename = ""
+modified = false
+selected = 1
+refresh = false
+stty = "stty"
+
+--
+-- Funcții
+--
+switch = function(value)
+	return function(cases)
+		setmetatable(cases, cases)
+		
+		local f = cases[value]
+		if f then f() end
+	end
+end
+printf = function(...)
+	io.write(...)
+	io.flush()
+end
+-- Curăță ecranul
+t_clear = function()
+	printf(ESC.."0;0H"..ESC.."2J")
+end
+-- Ascunde/arată cursorul
+t_toggle = function(mode)
+	if mode == 0 then -- Ascunde
+		printf(ESC.."?25l")
+	else    -- Arată
+		printf(ESC.."?25h")
+	end
+end
+-- Mută cursorul
+t_move = function(x, y)
+	printf(ESC..y..";"..x.."H")
+end
+-- Scrie la coord.
+t_plot = function(x, y, str)
+	t_move(x, y)
+	printf(str)
+end
+
+-- Obține un singur caracter
+getch = function()
+	return string.byte(io.read(1))
+end
+
+-- Obține poziția cursorului
+getcpos = function()
+	-- Funcție vt-100 care va trimite poziția
+	printf(ESC.."6n")
+	local i, c = 0
+	local s = ""
+	-- Primește prima parte a ieșirii (ESC + [)
+	c = getch(); if c ~= 27 then return nil end
+	c = getch(); if c ~= 91 then return nil end
+	-- Obține coordonatele
+	while true do
+		i = i+1
+		if i > 8 then return nil end
+		c = getch()
+		if c == string.byte('R') then break end
+		s = s..string.char(c)
+	end
+
+	local n, m = s:match("(%d+);(%d+)")
+	if not n then return nil end
+
+	-- Trimite coordonatele
+	return tonumber(n), tonumber(m)
+end
+-- Obține și verifică mărimea ferestrei
+tty_get_size = function()
+	-- Salvează coordonatele actuale
+	printf(ESC.."s")
+
+	-- Intențional prea mare
+	t_move(999,999)
+	local h, w = getcpos()
+
+	-- Restaurează coordonatele
+	printf(ESC.."u")
+
+	return w, h
+end
+-- Schimbă modul tty
+tty_mode = function(mode)
+	if mode == 5 then
+		return os.execute(stty.." raw -echo 2> /dev/null")
+	else
+		return os.execute(stty.." sane")
+	end
+end
+-- Desenare
+d_scene = function()
+	-- Treci la început
+	t_move(1, 1)
+	printf(string.rep(BORDER, SCENE[1]+2))
+
+	-- Scrie fiecare linie
+	for i=2, SCENE[2]+2 do
+		t_plot(1,          i, BORDER)
+		t_plot(SCENE[1]+2, i, BORDER)
+	end
+
+	t_move(1, SCENE[2]+2)
+	printf(string.rep(BORDER, SCENE[1]+2))
+	-- Interpretare buffer
+	t_move(2, 2)	
+	for y=1,#BUFFER do
+		for x=1,#BUFFER[y] do
+			t_plot(x+1, y+1, COLORS[BUFFER[y][x]])
+		end
+	end
+end
+-- Cursor
+d_cursor = function()
+	-- Istoric
+	-- Preia pixelul din fundal:
+	local pix = BUFFER[C_XY[4]][C_XY[3]]
+
+	t_plot(C_XY[3]+1, C_XY[4]+1, COLORS[pix])
+	-- Cursorul actual 
+	t_plot(C_XY[1]+1, C_XY[2]+1, CURSOR)
+end
+-- Bară de informații
+d_bar = function()
+	-- Șterge anterior
+	t_plot(1, SCENE[2]+4, string.rep(" ", WINDOW[1]))
+	t_plot(1, SCENE[2]+4, "("..filename..") "..C_XY[1].."/"..C_XY[2].." "..SCENE[1].."x"..SCENE[2].." | c: "..COLORS[selected].." | "..info)
+end
+
+-- Memorie
+-- Generează bufferul (pânza de desen)
+g_buffer = function()
+	local buff = {}
+	for y=1, SCENE[2] do
+		local line = {}
+		for x=1, SCENE[1] do
+			-- Alb pentru o nouă pânză
+			line[x] = 8;
+		end
+		buff[y] = line
+	end
+
+	return buff
+end
+-- Salvează fișierul actual
+s_buffer = function()
+	local f, err = io.open(filename, "w")
+	if not f then
+		info = "File not saved. "..err
+		return false
+	end
+	-- Scrie mărimea pânzei
+	-- Va fi verificată mai târziu la citire pentru a se asigura că fișie-
+	-- rul este valid
+	f:write(SCENE[1].." "..SCENE[2].."\n")
+	for y=1,#BUFFER do
+		for x=1,#BUFFER[y] do
+			-- Scrie fiecare pixel separat de un spațiu
+			f:write(BUFFER[y][x].." ")
+		end
+		f:write("\n")
+	end
+
+	f:close()
+	return true
+end
+e_buffer = function(format)
+	if format == ".svg" then
+		-- Deschide un nou fișier spre scriere
+		local f = io.open(filename..format, "w")
+
+		-- Prima parte
+		-- Folosim pătrețele de 10 pixeli
+		f:write("<svg width=\""..(SCENE[1]*10).."\" height=\""..(SCENE[2]*10).."\" xmlns=\"http://www.w3.org/2000/svg\">\n")
+			for y=1,#BUFFER do
+				for x=1,#BUFFER[y] do
+					f:write("<rect x=\""..((x-1)*10).."\" y=\""..((y-1)*10).."\" width=\"10\" height=\"10\" fill=\""..SVG[BUFFER[y][x]].."\" />\n")
+				end
+			end
+		f:write("</svg>")
+		f:close()
+		info = "SVG exported."
+	elseif format == ".xpm" then
+		local f = io.open(filename..format, "w")
+		-- Format XPM3
+		f:write("/* XPM */\nstatic char * XFACE[] = {\n")
+		-- X,Y, număr culori, un pixel corespunde unui caracter
+		f:write("\t\""..SCENE[1].." "..SCENE[2].." 8 1\",\n")
+		-- Culorile:
+		f:write("\t\"a c #ffffff\",\n") -- alb
+		f:write("\t\"n c #000000\",\n") -- negru
+		f:write("\t\"r c #ff0000\",\n") -- roșu
+		f:write("\t\"v c #00ff00\",\n") -- verde
+		f:write("\t\"b c #0000ff\",\n") -- bleu (albastru)
+		f:write("\t\"g c #ffff00\",\n") -- galben
+		f:write("\t\"t c #00ffff\",\n") -- turcoaz
+		f:write("\t\"m c #ff00ff\",\n") -- mov/magenta
+		-- Pixeli (caractere)
+		for y=1,#BUFFER do
+			-- start ("...)
+			f:write("\t\"")
+			for x=1,#BUFFER[y] do
+				f:write(XPM[BUFFER[y][x]])
+			end
+			-- final (...",)
+			f:write("\",\n")
+		end
+		-- Închide fișierul
+		f:write("}\n")
+		f:close()
+		info = "XPM exported."
+	 end
+end
+-- Citește un fișier salvat într-un buffer
+r_buffer = function(file)
+	local f = io.open(file, "r")
+	if not f then
+		info = "Cannot read file."
+		return false
+	end
+	-- Salvează fișierul într-o listă
+	local list = {}
+	for line in f:lines() do
+		table.insert(list, line)
+	end
+	f:close()
+	-- Creează un buffer temporar
+	local b = {}
+	for i=1, #list do
+		local toks = {}
+		for token in string.gmatch(list[i], "%S+") do
+			table.insert(toks, tonumber(token))
+		end
+		table.insert(b, toks)
+	end
+	-- Mărimea fișierului coincide cu mărimea declarată
+	if #b[#b] == b[1][1] and (#b-1) == b[1][2] then
+		-- Mărimea pânzei
+		SCENE[1] = b[1][1]
+		SCENE[2] = b[1][2]
+		local buff = {}
+		for i=2,#b do
+			table.insert(buff, b[i])
+		end
+		return buff
+	else
+		info = b[1][1].."/"..b[1][2].." "..(#b-1).." "..#b[#b].."File couldn't be read properly!"
+		return false
+	end
+end
+
+--
+-- Main
+--
+
+-- Dacă avem trei argumente atunci interpretăm și mărimea scenei
+if #arg > 2 then
+	filename = arg[1]
+	SCENE[1] = tonumber(arg[2])
+	SCENE[2] = tonumber(arg[3])
+	BUFFER = g_buffer()
+elseif #arg == 1 then
+	-- Dacă nu, încercăm să deschidem un fișier
+	-- (se renunță dacă nu există)
+	filename = arg[1]
+	BUFFER = r_buffer(filename)
+	print(BUFFER)
+	if not BUFFER then
+		print(arg[0]..": Invalid file format: "..info)
+		os.exit(1)
+	end
+else
+	-- Generează bufferul
+	filename = "default.nc"
+	BUFFER = g_buffer()
+end
+
+-- Pregătește linia de comandă
+tty_mode(5)
+t_toggle(0)
+t_clear()
+
+-- Obține mărimea ferestrei
+WINDOW[1], WINDOW[2] = tty_get_size()
+info = WINDOW[1].." "..SCENE[1]..":"..WINDOW[2].." "..SCENE[2]
+if WINDOW[1] < SCENE[1]+2 or WINDOW[2] < SCENE[2]+4 then
+	tty_mode(0)
+	t_toggle(1)
+	print(arg[0]..": Screen too small. Must be at least x+2, y+4")
+	os.exit(1)
+end
+
+d_scene()
+while not quit do
+	-- Actualizează imediat?
+	if refresh then
+		d_scene()
+		refresh = false
+	end
+
+	-- Desenează cursorul și bara de informații
+	d_bar()
+	d_cursor()
+
+	local key = getch()
+	info = key
+	switch (key) {
+		-- Ieșire
+		[KEY_QUIT]  = function()
+			if modified then
+				t_clear()
+				t_plot(1,1, "File not saved. Save? (y/n)")
+				local opt = io.read(1)
+				if opt == "y" then
+					s_buffer()
+					quit = true
+				elseif opt == "n" then
+					quit = true
+				end
+				t_clear()
+				refresh = true
+			else
+				quit = true
+			end
+		end,
+		-- Deplasare
+		[KEY_DOWN]  = function()
+			-- Istoric
+			C_XY[3], C_XY[4] = C_XY[1], C_XY[2]
+			if C_XY[2] < SCENE[2] then C_XY[2] = C_XY[2]+1 end
+		end,	
+		[KEY_UP]    = function()
+			C_XY[3], C_XY[4] = C_XY[1], C_XY[2]
+			if C_XY[2] > 1 then C_XY[2] = C_XY[2]-1 end
+		end,
+		[KEY_LEFT]  = function()
+			C_XY[3], C_XY[4] = C_XY[1], C_XY[2]
+			if C_XY[1] > 1 then C_XY[1] = C_XY[1]-1 end
+		end,
+		[KEY_RIGHT] = function()
+			C_XY[3], C_XY[4] = C_XY[1], C_XY[2]
+			if C_XY[1] < SCENE[1] then C_XY[1] = C_XY[1]+1 end
+		end,
+		-- Comenzi
+		[KEY_PICK] = function()
+			-- Alege o culoare (1..8)
+			t_clear()
+			t_plot(1, 1, "Choose a color (1-8):")
+			-- Arată culorile într-o listă
+			for i=1, #COLORS do
+				t_plot(4, i+1, i.." "..COLORS[i])
+			end
+
+			local col = tonumber(io.read(1))
+			-- Verifică dacă este în limite
+			if col ~= nil then
+				if col > 0 and col < 9 then
+					info = "Color selected."
+					selected = col
+				end
+			else
+				info = "Invalid number."
+			end
+			refresh = true
+			t_clear()
+		end,
+		[KEY_IN] = function()
+			-- Introduce un pixel
+			BUFFER[C_XY[2]][C_XY[1]] = selected
+			if not modified then modified = true end
+		end,
+		[KEY_OUT] = function()
+			-- Șterge un pixel
+			BUFFER[C_XY[2]][C_XY[1]] = 8
+			if not modified then modified = true end
+		end,
+		[KEY_SAVE] = function()
+			if s_buffer() then
+				if modified then modified = false end
+				info = "File saved."
+			end
+		end,
+		[KEY_EXPORT] = function()
+			t_clear()
+			t_plot(1, 1, "Press 1 for SVG, 2 for X PixMap:")
+
+			local opt = tonumber(io.read(1))
+			if opt ~= nil then
+				if opt == 1 then
+					e_buffer(".svg")
+				elseif opt == 2 then
+					e_buffer(".xpm")
+				end
+			end
+
+			refresh = true
+			t_clear()
+		end,
+		-- Default:
+		--__index = function() end
+	}
+end
+
+-- Întoarcere la normal
+tty_mode(0)
+t_toggle(1)
+t_clear()
+
