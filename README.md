@@ -26,12 +26,15 @@ Movement uses the arrow keys.
 
 The rest is also quite simple:
 
-* I - Insert a pixel
-* O - take Out a pixel
-* C - Choose a color (1-8)
-* S - Save
-* E - Export
-* Q - Quit (will ask if unsaved)
+| KEY | FUNCTION                     |
+| --- | ---                          |
+| I   | Insert a pixel               |
+| O   | take Out a pixel             | 
+| C   | Choose a color (1 through 8) |
+| L   | draw a Line (press twice)    |
+| S   | Save to file                 |
+| E   | Export as SVG or XPM         |
+| Q   | Quit (will ask if unsaved)   |
 
 ## Supported formats
 

@@ -11,6 +11,7 @@ BUFFER = {}
 CANVAS = {60, 20}
 WINDOW = {}
 CURSOR = '@'
+L   = {}
 QUIT   = nil
 INFO   = 'Welcome to chora!'
 MODIF  = false
@@ -32,7 +33,7 @@ KEY_DEL    = 111 -- o
 KEY_PICK   = 99  -- p
 KEY_SAVE   = 115 -- s
 KEY_EXPORT = 101 -- e
-KEY_LINE   = 108 -- l
+KEY_L   = 108 -- l
 KEY_QUIT   = 113 -- q
 
 -- ASCII escape codes
@@ -436,6 +437,71 @@ while not QUIT do
 			-- Sterge un pixel (caracter)
 			BUFFER[C[2]][C[1]] = SELECT
 			if not MODIF then MODIF = true end
+		end,
+		-- Deseneaza o linie
+		[KEY_L] = function()
+			if not L.a then
+				-- Obtine prima valoare
+				INFO = 'P1: '..C[1]..'/'..C[2]
+				-- x1, y1
+				L.a = {C[1], C[2]}
+			else
+				if L.a then
+					INFO = 'P2: '..C[1]..'/'..C[2]
+					-- x2, y2
+					L.b = {C[1], C[2]}
+					-- Bresenham (does not work / nu functioneaza)
+					--local m = 2*(L.b[2]-L.a[2]) -- 2*(y2-y1)
+					--local er = m-(L.b[1]-L.a[1]) -- m - (x2-x1)
+
+					--local y = L.a[2]
+					--for x=L.a[1],L.b[1] do
+					--	BUFFER[y][x] = SELECT
+					--	er = er+m
+					--	-- Increment	
+					--	if er >= 0 then
+					--		y=y+1
+					--		er = er-2*(L.b[1]-L.a[1])
+					--	end
+					--end
+					-- Linii verticale si orizontale
+					if L.a[1] == L.b[1] then
+						-- x1 si x2 sunt identice, y difera
+						local x = L.a[1]
+						local ya, yb
+						-- schimba ordinea in functie de directie
+						if L.a[2] > L.b[2] then
+							ya = L.b[2]
+							yb = L.a[2]
+						else
+							ya = L.a[2]
+							yb = L.b[2]
+						end
+
+						for y=ya,yb do
+							BUFFER[y][x] = SELECT
+						end
+					elseif L.a[2] == L.b[2] then
+						-- y1 si y2 identice, x difera
+						local y = L.a[2]
+						local xa, xb
+						if L.a[1] > L.b[1] then
+							xa = L.b[1]
+							xb = L.a[1]
+						else
+							xa = L.a[1]
+							xb = L.b[1]
+						end
+						for x=xa,xb do
+							BUFFER[y][x] = SELECT
+						end
+					end
+					-- Reset
+					INFO = L.a[1]..','..L.a[2]..' -> '..L.b[1]..','..L.b[2]
+					L.a = nil
+					REDRAW = true
+				end
+			end
 		end,
 		-- Salveaza
 		[KEY_SAVE] = function()
